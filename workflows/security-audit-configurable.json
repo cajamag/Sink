@@ -1,0 +1,239 @@
+{
+  "name": "Auditoría de Seguridad - Configurable",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 400]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "hosts_list",
+              "name": "hosts",
+              "value": "=[\n  'pasarela.cajamag.com.co',\n  'asamblea.cajamag.com.co',\n  'sorteo.cajamag.com.co',\n  'firmas.cajamag.com.co',\n  'streamingnew.cajamag.com.co',\n  'feria.cajamag.com.co',\n  'apim.cajamag.com.co',\n  'novena.cajamag.com.co',\n  'eventos.cajamag.com.co',\n  'bingonew.cajamag.com.co',\n  'condrummondennavidad.cajamag.com.co',\n  'citas.cajamag.com.co',\n  'saipi.cajamag.com.co',\n  'market.cajamag.com.co',\n  'sijec.cajamag.com.co',\n  'atletismo.cajamag.com.co',\n  'censo.cajamag.com.co',\n  'elecciones.cajamag.com.co',\n  'test.cajam.ag'\n]",
+              "type": "array"
+            },
+            {
+              "id": "paths_list",
+              "name": "paths",
+              "value": "=[\n  'storage',\n  'storage/app',\n  'storage/app/public',\n  'storage/framework',\n  'storage/framework/cache',\n  'storage/framework/sessions',\n  'storage/framework/views',\n  'storage/logs',\n  'public/storage',\n  '.env',\n  '.git',\n  '.git/config',\n  'vendor',\n  'composer.json',\n  'composer.lock',\n  'artisan',\n  'phpunit.xml',\n  '.gitignore',\n  'database',\n  'config'\n]",
+              "type": "array"
+            },
+            {
+              "id": "email_from",
+              "name": "emailFrom",
+              "value": "security@cajamag.com.co",
+              "type": "string"
+            },
+            {
+              "id": "email_to",
+              "name": "emailTo",
+              "value": "admin@cajamag.com.co",
+              "type": "string"
+            },
+            {
+              "id": "slack_channel",
+              "name": "slackChannel",
+              "value": "#seguridad",
+              "type": "string"
+            },
+            {
+              "id": "scan_timeout",
+              "name": "scanTimeout",
+              "value": 10000,
+              "type": "number"
+            },
+            {
+              "id": "delay_between_requests",
+              "name": "delayBetweenRequests",
+              "value": 100,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "⚙️ Configuración",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [450, 400],
+      "notes": "Modifica aquí los hosts, paths y configuraciones sin tocar el código"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Obtener configuración del nodo anterior\nconst config = $input.first().json;\nconst hosts = config.hosts;\nconst pathsToCheck = config.paths;\nconst scanTimeout = config.scanTimeout || 10000;\nconst delayBetweenRequests = config.delayBetweenRequests || 100;\n\nconsole.log(`Iniciando escaneo de ${hosts.length} hosts...`);\n\n// Función para determinar severidad\nfunction getSeverity(path, httpCode) {\n  if (httpCode !== 200) return 'BAJA';\n  \n  const pathLower = path.toLowerCase();\n  \n  if (pathLower.includes('.env') || pathLower.includes('.git') || \n      pathLower.includes('database') || pathLower === 'config') {\n    return 'CRÍTICA';\n  }\n  \n  if (pathLower.includes('storage') && !pathLower.includes('public/storage')) {\n    return 'ALTA';\n  }\n  \n  if (pathLower.includes('vendor') || pathLower.includes('composer')) {\n    return 'MEDIA';\n  }\n  \n  return 'BAJA';\n}\n\n// Función para verificar URL con timeout\nasync function checkUrl(url, timeout) {\n  const controller = new AbortController();\n  const timeoutId = setTimeout(() => controller.abort(), timeout);\n  \n  try {\n    const response = await fetch(url, {\n      method: 'HEAD',\n      redirect: 'manual',\n      signal: controller.signal,\n      headers: {\n        'User-Agent': 'Security-Audit-Bot/n8n/2.0'\n      }\n    });\n    \n    clearTimeout(timeoutId);\n    \n    return {\n      status: response.status,\n      size: response.headers.get('content-length') || '0',\n      contentType: response.headers.get('content-type') || 'unknown',\n      success: true\n    };\n  } catch (error) {\n    clearTimeout(timeoutId);\n    \n    return {\n      status: 0,\n      size: '0',\n      contentType: 'error',\n      error: error.name === 'AbortError' ? 'Timeout' : error.message,\n      success: false\n    };\n  }\n}\n\n// Escanear todos los hosts\nconst results = [];\nlet totalCritical = 0;\nlet totalWarnings = 0;\nlet totalSecure = 0;\nlet totalScanned = 0;\n\nfor (const host of hosts) {\n  console.log(`[${++totalScanned}/${hosts.length}] Escaneando: ${host}`);\n  \n  const hostResult = {\n    host: host,\n    findings: [],\n    critical: 0,\n    warnings: 0,\n    low: 0,\n    isSecure: true,\n    scannedPaths: 0,\n    errorPaths: 0\n  };\n  \n  for (const path of pathsToCheck) {\n    const url = `https://${host}/${path}`;\n    \n    const result = await checkUrl(url, scanTimeout);\n    hostResult.scannedPaths++;\n    \n    if (!result.success) {\n      hostResult.errorPaths++;\n      continue;\n    }\n    \n    if (result.status === 200) {\n      const severity = getSeverity(path, result.status);\n      \n      hostResult.findings.push({\n        url: url,\n        path: path,\n        status: result.status,\n        size: result.size,\n        contentType: result.contentType,\n        severity: severity,\n        timestamp: new Date().toISOString()\n      });\n      \n      hostResult.isSecure = false;\n      \n      if (severity === 'CRÍTICA') {\n        hostResult.critical++;\n        totalCritical++;\n      } else if (severity === 'ALTA') {\n        hostResult.warnings++;\n        totalWarnings++;\n      } else if (severity === 'MEDIA') {\n        hostResult.warnings++;\n        totalWarnings++;\n      } else {\n        hostResult.low++;\n      }\n    }\n    \n    // Pausa entre requests\n    await new Promise(resolve => setTimeout(resolve, delayBetweenRequests));\n  }\n  \n  if (hostResult.isSecure) {\n    totalSecure++;\n  }\n  \n  results.push(hostResult);\n}\n\n// Calcular métricas adicionales\nconst vulnerableHosts = results.filter(h => !h.isSecure);\nconst criticalHosts = results.filter(h => h.critical > 0);\nconst totalFindings = results.reduce((sum, h) => sum + h.findings.length, 0);\n\n// Preparar output\nconst output = {\n  timestamp: new Date().toISOString(),\n  scanDuration: 'completed',\n  summary: {\n    totalHosts: hosts.length,\n    secureHosts: totalSecure,\n    vulnerableHosts: vulnerableHosts.length,\n    criticalHosts: criticalHosts.length,\n    criticalVulnerabilities: totalCritical,\n    warnings: totalWarnings,\n    totalFindings: totalFindings,\n    pathsScanned: pathsToCheck.length,\n    totalRequests: hosts.length * pathsToCheck.length\n  },\n  topVulnerable: vulnerableHosts\n    .sort((a, b) => b.critical - a.critical || b.warnings - a.warnings)\n    .slice(0, 5)\n    .map(h => ({\n      host: h.host,\n      critical: h.critical,\n      warnings: h.warnings,\n      totalFindings: h.findings.length\n    })),\n  hosts: results,\n  config: {\n    emailFrom: config.emailFrom,\n    emailTo: config.emailTo,\n    slackChannel: config.slackChannel\n  }\n};\n\nconsole.log(`Escaneo completado: ${totalFindings} hallazgos en ${vulnerableHosts.length} hosts`);\n\nreturn output;"
+      },
+      "name": "🔍 Security Scanner",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400],
+      "notes": "Motor de escaneo - No necesitas modificar esto"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.summary.criticalVulnerabilities }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "🚨 Hay Críticas?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\n// Generar HTML del reporte\nconst html = `\n<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>Reporte de Auditoría de Seguridad</title>\n    <style>\n        * { margin: 0; padding: 0; box-sizing: border-box; }\n        body {\n            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            padding: 20px;\n            color: #333;\n        }\n        .container {\n            max-width: 1400px;\n            margin: 0 auto;\n            background: white;\n            border-radius: 15px;\n            box-shadow: 0 20px 60px rgba(0,0,0,0.3);\n            overflow: hidden;\n        }\n        .header {\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            color: white;\n            padding: 30px;\n            text-align: center;\n        }\n        .header h1 { font-size: 2.5em; margin-bottom: 10px; }\n        .header p { font-size: 1.1em; opacity: 0.9; }\n        .alert-banner {\n            background: ${data.summary.criticalVulnerabilities > 0 ? '#dc3545' : '#28a745'};\n            color: white;\n            padding: 15px;\n            text-align: center;\n            font-weight: bold;\n            font-size: 1.2em;\n        }\n        .stats {\n            display: grid;\n            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));\n            gap: 20px;\n            padding: 30px;\n            background: #f8f9fa;\n        }\n        .stat-card {\n            background: white;\n            padding: 20px;\n            border-radius: 10px;\n            text-align: center;\n            box-shadow: 0 2px 10px rgba(0,0,0,0.1);\n        }\n        .stat-card h3 { color: #666; font-size: 0.9em; margin-bottom: 10px; text-transform: uppercase; }\n        .stat-card .number { font-size: 2.5em; font-weight: bold; }\n        .stat-card.critical .number { color: #dc3545; }\n        .stat-card.warning .number { color: #ffc107; }\n        .stat-card.success .number { color: #28a745; }\n        .stat-card.info .number { color: #17a2b8; }\n        .top-vulnerable {\n            background: #fff3cd;\n            border-left: 4px solid #ffc107;\n            padding: 20px;\n            margin: 20px 30px;\n            border-radius: 5px;\n        }\n        .top-vulnerable h3 { margin-bottom: 15px; color: #856404; }\n        .top-list { list-style: none; }\n        .top-list li {\n            padding: 10px;\n            margin: 5px 0;\n            background: white;\n            border-radius: 5px;\n            display: flex;\n            justify-content: space-between;\n            align-items: center;\n        }\n        .content { padding: 30px; }\n        .host-section {\n            margin-bottom: 30px;\n            border: 1px solid #e0e0e0;\n            border-radius: 10px;\n            overflow: hidden;\n        }\n        .host-header {\n            background: #f8f9fa;\n            padding: 15px 20px;\n            border-bottom: 2px solid #dee2e6;\n            display: flex;\n            justify-content: space-between;\n            align-items: center;\n            flex-wrap: wrap;\n        }\n        .host-header h2 { color: #333; font-size: 1.3em; }\n        .host-meta {\n            font-size: 0.85em;\n            color: #666;\n            margin-top: 5px;\n        }\n        .host-status { \n            padding: 5px 15px; \n            border-radius: 20px; \n            font-weight: bold;\n            font-size: 0.9em;\n            margin: 5px;\n        }\n        .host-status.vulnerable { background: #dc3545; color: white; }\n        .host-status.secure { background: #28a745; color: white; }\n        .host-status.warning { background: #ffc107; color: #333; }\n        .findings { padding: 20px; }\n        .finding {\n            background: #fff3cd;\n            border-left: 4px solid #ffc107;\n            padding: 15px;\n            margin-bottom: 10px;\n            border-radius: 5px;\n        }\n        .finding.critical {\n            background: #f8d7da;\n            border-left-color: #dc3545;\n        }\n        .finding.high {\n            background: #ffe5d0;\n            border-left-color: #fd7e14;\n        }\n        .finding-url { \n            font-family: 'Courier New', monospace; \n            font-weight: bold;\n            color: #333;\n            word-break: break-all;\n            margin-bottom: 10px;\n        }\n        .finding-details {\n            font-size: 0.9em;\n            color: #666;\n        }\n        .severity-badge {\n            display: inline-block;\n            padding: 3px 10px;\n            border-radius: 12px;\n            font-size: 0.85em;\n            font-weight: bold;\n            margin-right: 10px;\n        }\n        .severity-crítica { background: #dc3545; color: white; }\n        .severity-alta { background: #fd7e14; color: white; }\n        .severity-media { background: #ffc107; color: #333; }\n        .severity-baja { background: #6c757d; color: white; }\n        .no-findings {\n            text-align: center;\n            padding: 30px;\n            color: #28a745;\n            font-size: 1.2em;\n        }\n        .footer {\n            background: #f8f9fa;\n            padding: 20px;\n            text-align: center;\n            color: #666;\n            border-top: 1px solid #e0e0e0;\n        }\n        .scan-info {\n            display: grid;\n            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));\n            gap: 10px;\n            font-size: 0.85em;\n            color: #666;\n        }\n    </style>\n</head>\n<body>\n    <div class=\"container\">\n        <div class=\"header\">\n            <h1>🔒 Reporte de Auditoría de Seguridad</h1>\n            <p>Análisis Automatizado de Directorios Expuestos</p>\n            <p style=\"font-size: 0.9em; margin-top: 10px;\">${new Date(data.timestamp).toLocaleString('es-CO', { dateStyle: 'full', timeStyle: 'medium' })}</p>\n        </div>\n        <div class=\"alert-banner\">\n            ${data.summary.criticalVulnerabilities > 0 ? \n                `🚨 ALERTA: ${data.summary.criticalVulnerabilities} VULNERABILIDADES CRÍTICAS DETECTADAS` :\n                data.summary.warnings > 0 ?\n                `⚠️ ${data.summary.warnings} ADVERTENCIAS DETECTADAS` :\n                `✅ TODOS LOS HOSTS ESTÁN SEGUROS`\n            }\n        </div>\n        <div class=\"stats\">\n            <div class=\"stat-card critical\">\n                <h3>Críticas</h3>\n                <div class=\"number\">${data.summary.criticalVulnerabilities}</div>\n            </div>\n            <div class=\"stat-card warning\">\n                <h3>Advertencias</h3>\n                <div class=\"number\">${data.summary.warnings}</div>\n            </div>\n            <div class=\"stat-card success\">\n                <h3>Hosts Seguros</h3>\n                <div class=\"number\">${data.summary.secureHosts}</div>\n            </div>\n            <div class=\"stat-card info\">\n                <h3>Total Hosts</h3>\n                <div class=\"number\">${data.summary.totalHosts}</div>\n            </div>\n        </div>\n        \n        ${data.topVulnerable && data.topVulnerable.length > 0 ? `\n        <div class=\"top-vulnerable\">\n            <h3>🎯 Top 5 Hosts Más Vulnerables</h3>\n            <ul class=\"top-list\">\n                ${data.topVulnerable.map((host, idx) => `\n                <li>\n                    <span><strong>#${idx + 1}</strong> ${host.host}</span>\n                    <span>\n                        ${host.critical > 0 ? `<span style=\"color: #dc3545; font-weight: bold;\">${host.critical} críticas</span>` : ''}\n                        ${host.warnings > 0 ? `<span style=\"color: #ffc107; font-weight: bold;\"> ${host.warnings} advertencias</span>` : ''}\n                    </span>\n                </li>\n                `).join('')}\n            </ul>\n        </div>\n        ` : ''}\n        \n        <div class=\"content\">\n            <h2 style=\"margin-bottom: 20px;\">Detalle por Host</h2>\n${data.hosts.map(host => `\n            <div class=\"host-section\">\n                <div class=\"host-header\">\n                    <div>\n                        <h2>🌐 ${host.host}</h2>\n                        <div class=\"host-meta\">\n                            ${host.scannedPaths} rutas escaneadas\n                            ${host.errorPaths > 0 ? ` | ${host.errorPaths} errores de conexión` : ''}\n                        </div>\n                    </div>\n                    <span class=\"host-status ${host.isSecure ? 'secure' : (host.critical > 0 ? 'vulnerable' : 'warning')}\">\n                        ${host.isSecure ? '✓ SEGURO' : \n                          host.critical > 0 ? `🚨 ${host.critical} CRÍTICAS` :\n                          `⚠️ ${host.findings.length} HALLAZGOS`}\n                    </span>\n                </div>\n                <div class=\"findings\">\n                    ${host.isSecure ? \n                        '<div class=\"no-findings\">✅ No se encontraron vulnerabilidades en este host</div>' :\n                        host.findings.map(finding => `\n                        <div class=\"finding ${finding.severity === 'CRÍTICA' ? 'critical' : finding.severity === 'ALTA' ? 'high' : ''}\">\n                            <div class=\"finding-url\">${finding.url}</div>\n                            <div class=\"finding-details\">\n                                <span class=\"severity-badge severity-${finding.severity.toLowerCase()}\">${finding.severity}</span>\n                                <strong>HTTP ${finding.status}</strong> | \n                                ${finding.size} bytes | \n                                ${finding.contentType}<br>\n                                <small style=\"color: #999;\">Detectado: ${new Date(finding.timestamp).toLocaleTimeString('es-CO')}</small>\n                            </div>\n                        </div>\n                        `).join('')\n                    }\n                </div>\n            </div>\n`).join('')}\n        </div>\n        <div class=\"footer\">\n            <div class=\"scan-info\">\n                <div><strong>Total Requests:</strong> ${data.summary.totalRequests}</div>\n                <div><strong>Hallazgos:</strong> ${data.summary.totalFindings}</div>\n                <div><strong>Paths Escaneados:</strong> ${data.summary.pathsScanned}</div>\n            </div>\n            <p style=\"margin-top: 15px;\"><strong>Generado automáticamente por n8n Security Audit v2.0</strong></p>\n            <p style=\"font-size: 0.85em; color: #999;\">Este reporte es confidencial</p>\n        </div>\n    </div>\n</body>\n</html>\n`;\n\n// Generar resumen en texto plano para email\nconst textSummary = `\nRESUMEN DE AUDITORÍA DE SEGURIDAD\n${'='.repeat(50)}\n\nFecha: ${new Date(data.timestamp).toLocaleString('es-CO')}\n\nRESULTADOS:\n- Hosts escaneados: ${data.summary.totalHosts}\n- Hosts seguros: ${data.summary.secureHosts}\n- Hosts vulnerables: ${data.summary.vulnerableHosts}\n- Vulnerabilidades críticas: ${data.summary.criticalVulnerabilities}\n- Advertencias: ${data.summary.warnings}\n- Total hallazgos: ${data.summary.totalFindings}\n\n${data.summary.criticalVulnerabilities > 0 ? `\n⚠️  ACCIÓN REQUERIDA INMEDIATA\n${'-'.repeat(50)}\nSe detectaron ${data.summary.criticalVulnerabilities} vulnerabilidades críticas que requieren atención inmediata.\n` : ''}\n\n${data.topVulnerable && data.topVulnerable.length > 0 ? `\nTOP HOSTS MÁS VULNERABLES:\n${data.topVulnerable.map((h, i) => `${i+1}. ${h.host} - ${h.critical} críticas, ${h.warnings} advertencias`).join('\\n')}\n` : ''}\n\nPara ver el reporte completo, revisa el archivo HTML adjunto.\n`;\n\nreturn {\n  html: html,\n  textSummary: textSummary,\n  data: data,\n  fileName: `security_audit_${new Date().toISOString().split('T')[0]}.html`,\n  isCritical: data.summary.criticalVulnerabilities > 0,\n  hasWarnings: data.summary.warnings > 0\n};"
+      },
+      "name": "📊 Generate Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "operation": "sendEmail",
+        "fromEmail": "={{ $json.data.config.emailFrom }}",
+        "toEmail": "={{ $json.data.config.emailTo }}",
+        "subject": "🚨 ALERTA CRÍTICA: Vulnerabilidades de Seguridad Detectadas",
+        "emailType": "html",
+        "message": "={{ $json.textSummary }}",
+        "attachments": "={{ $json.fileName }}={{ $json.html }}",
+        "options": {}
+      },
+      "name": "📧 Email Crítico",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "channel": "={{ $json.data.config.slackChannel }}",
+        "text": "=🚨 *ALERTA DE SEGURIDAD CRÍTICA*\n\nSe detectaron *{{ $json.data.summary.criticalVulnerabilities }}* vulnerabilidades críticas en *{{ $json.data.summary.criticalHosts }}* hosts\n\n*Resumen:*\n• Total hosts: {{ $json.data.summary.totalHosts }}\n• Hosts vulnerables: {{ $json.data.summary.vulnerableHosts }}\n• Hosts seguros: {{ $json.data.summary.secureHosts }}\n• Vulnerabilidades críticas: {{ $json.data.summary.criticalVulnerabilities }}\n• Advertencias: {{ $json.data.summary.warnings }}\n\n{{ $json.data.topVulnerable.length > 0 ? '*Top 3 Hosts Críticos:*\\n' + $json.data.topVulnerable.slice(0,3).map((h, i) => `${i+1}. ${h.host} - ${h.critical} críticas`).join('\\n') : '' }}\n\n⚠️ Revisa el reporte completo en tu correo.",
+        "otherOptions": {}
+      },
+      "name": "💬 Slack Crítico",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1250, 350]
+    },
+    {
+      "parameters": {
+        "operation": "sendEmail",
+        "fromEmail": "={{ $json.data.config.emailFrom }}",
+        "toEmail": "={{ $json.data.config.emailTo }}",
+        "subject": "✅ Reporte de Seguridad - {{ $json.data.summary.warnings > 0 ? 'Advertencias Detectadas' : 'Todo OK' }}",
+        "emailType": "html",
+        "message": "={{ $json.textSummary }}",
+        "attachments": "={{ $json.fileName }}={{ $json.html }}",
+        "options": {}
+      },
+      "name": "📧 Email Normal",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1250, 500]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "⚙️ Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⚙️ Configuración": {
+      "main": [
+        [
+          {
+            "node": "🔍 Security Scanner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔍 Security Scanner": {
+      "main": [
+        [
+          {
+            "node": "🚨 Hay Críticas?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🚨 Hay Críticas?": {
+      "main": [
+        [
+          {
+            "node": "📊 Generate Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "📊 Generate Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📊 Generate Report": {
+      "main": [
+        [
+          {
+            "node": "📧 Email Crítico",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "💬 Slack Crítico",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "📧 Email Normal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-10-25T03:19:30.000Z",
+  "versionId": "1.0.0"
+}
